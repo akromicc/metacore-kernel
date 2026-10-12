@@ -57,3 +57,13 @@ type Embedder interface {
 	// batch under the hood or fall back to per-text calls.
 	GenerateBatchEmbeddings(texts []string) ([][]float32, error)
 }
+
+// SearchResult is a semantic-search hit decoded back into a record: the row
+// ID, its cosine similarity and the row's columns. It is what a
+// SemanticPipeline-style component returns to callers (the agent runtime
+// renders these as record embeds).
+type SearchResult struct {
+	ID         string         `json:"id"`
+	Similarity float64        `json:"similarity"`
+	Data       map[string]any `json:"data"`
+}
