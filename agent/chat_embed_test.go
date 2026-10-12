@@ -87,7 +87,7 @@ func TestDedupeEmbeds(t *testing.T) {
 		{Type: "record", Model: "a", ID: "1"},
 		{Type: "view", Model: "a", Search: "?x=1"},
 	}
-	out := dedupeEmbeds(in)
+	out := DedupeEmbeds(in)
 	if len(out) != 2 {
 		t.Fatalf("got %d", len(out))
 	}

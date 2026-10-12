@@ -55,7 +55,7 @@ func (t *GenerateImageTool) Parameters() map[string]any {
 }
 
 func (t *GenerateImageTool) Execute(ctx context.Context, params map[string]any, agentCtx *contextmgr.ConversationContext) (any, error) {
-	prompt := clipRunes(strParam(params, "prompt"), maxImagePromptLen)
+	prompt := ClipRunes(strParam(params, "prompt"), maxImagePromptLen)
 	if prompt == "" {
 		return nil, fmt.Errorf("prompt: se necesita una descripción de la imagen a generar")
 	}

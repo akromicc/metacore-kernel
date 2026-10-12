@@ -96,7 +96,7 @@ func (t *ShowChartTool) Execute(ctx context.Context, params map[string]any, agen
 }
 
 func parseChartSpec(params map[string]any) (*ChartSpec, error) {
-	title := clipRunes(strParam(params, "title"), maxChartTitle)
+	title := ClipRunes(strParam(params, "title"), maxChartTitle)
 	if title == "" {
 		title = "Gráfico"
 	}
@@ -108,9 +108,9 @@ func parseChartSpec(params map[string]any) (*ChartSpec, error) {
 		Kind:   normalizeChartKind(strParam(params, "kind")),
 		Title:  title,
 		XKey:   xKey,
-		XLabel: clipRunes(strParam(params, "x_label"), maxChartLabel),
-		Unit:   clipRunes(strParam(params, "unit"), 16),
-		Note:   clipRunes(strParam(params, "note"), maxChartNote),
+		XLabel: ClipRunes(strParam(params, "x_label"), maxChartLabel),
+		Unit:   ClipRunes(strParam(params, "unit"), 16),
+		Note:   ClipRunes(strParam(params, "note"), maxChartNote),
 	}
 
 	spec.Series = parseChartSeries(params["series"], spec.XKey)
@@ -181,7 +181,7 @@ func parseChartSeries(raw any, xKey string) []ChartSeries {
 				if label == "" {
 					label = key
 				}
-				out = append(out, ChartSeries{Key: key, Label: clipRunes(label, maxChartLabel)})
+				out = append(out, ChartSeries{Key: key, Label: ClipRunes(label, maxChartLabel)})
 			}
 			return out
 		}
@@ -209,7 +209,7 @@ func parseChartSeries(raw any, xKey string) []ChartSeries {
 		if label == "" {
 			label = key
 		}
-		out = append(out, ChartSeries{Key: key, Label: clipRunes(label, maxChartLabel)})
+		out = append(out, ChartSeries{Key: key, Label: ClipRunes(label, maxChartLabel)})
 		if len(out) >= maxChartSeries {
 			break
 		}
@@ -265,7 +265,7 @@ func cleanChartRow(row map[string]any, xKey string, series []ChartSeries) map[st
 	if label == "" {
 		return nil
 	}
-	out := map[string]any{xKey: clipRunes(label, maxChartLabel)}
+	out := map[string]any{xKey: ClipRunes(label, maxChartLabel)}
 	if len(series) == 0 {
 		for k, v := range row {
 			key := sanitizeChartKey(k)
@@ -368,7 +368,7 @@ func sanitizeChartKey(s string) string {
 	return out
 }
 
-func clipRunes(s string, n int) string {
+func ClipRunes(s string, n int) string {
 	s = strings.TrimSpace(s)
 	r := []rune(s)
 	if len(r) <= n {

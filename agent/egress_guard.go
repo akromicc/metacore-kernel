@@ -62,11 +62,11 @@ func guardedDialControl(_, address string, _ syscall.RawConn) error {
 	return nil
 }
 
-// newGuardedHTTPClient returns an http.Client for tenant-configured outbound
+// NewGuardedHTTPClient returns an http.Client for tenant-configured outbound
 // calls: every connection (including redirects) is checked by
 // guardedDialControl, and proxies from the environment are ignored so the
 // check sees the real destination.
-func newGuardedHTTPClient(timeout time.Duration) *http.Client {
+func NewGuardedHTTPClient(timeout time.Duration) *http.Client {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, Control: guardedDialControl}
 	transport := &http.Transport{
 		Proxy: nil,

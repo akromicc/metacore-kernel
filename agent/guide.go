@@ -43,6 +43,9 @@ type GuideTurn struct {
 	chosen  *SuggestedGuide
 }
 
+// HasCatalog reports whether the browser advertised any guide this turn.
+func (t *GuideTurn) HasCatalog() bool { return t != nil && len(t.catalog) > 0 }
+
 // NewGuideTurn sanitizes the client catalog (it is untrusted input that ends
 // up in a tool description): drops incomplete rows, dedupes, caps size/length.
 func NewGuideTurn(catalog []GuideDescriptor) *GuideTurn {

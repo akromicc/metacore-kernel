@@ -98,7 +98,7 @@ func embedsFromImageResult(result any) []ChatEmbed {
 	prompt, _ := m["prompt"].(string)
 	return []ChatEmbed{{
 		Type:         "image",
-		Title:        clipRunes(prompt, 80),
+		Title:        ClipRunes(prompt, 80),
 		ImageDataURL: "data:" + contentType + ";base64," + b64,
 	}}
 }
@@ -486,7 +486,7 @@ func asMap(v any) (map[string]any, bool) {
 	}
 }
 
-func dedupeEmbeds(embeds []ChatEmbed) []ChatEmbed {
+func DedupeEmbeds(embeds []ChatEmbed) []ChatEmbed {
 	if len(embeds) == 0 {
 		return embeds
 	}
