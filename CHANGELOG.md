@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`agent` runtime package (stage 1)** — reusable, host-agnostic pieces of the
+  copilot extracted from ops/gobiernos-ops: `agent/contextmgr`, `agent/tools`
+  (registry + calculator), chat embeds (`EmbedBuilder`, `ModelRegistry`),
+  provider-error classification, message queue, guides, chart/image tools
+  (`ImageGenerator` port), knowledge search over `vector.Store`, egress guard.
+  Dependency-inverted contracts in `agent/contracts.go` (`PermissionChecker`,
+  `ModuleGate`, `BrandProvider`). Also `vector.SearchResult`. New dependency:
+  `github.com/Knetic/govaluate` (calculator tool).
+
 ### Fixed
 
 - **Editar un registro sin fila de extensión ya no falla con `protected_field`.**
