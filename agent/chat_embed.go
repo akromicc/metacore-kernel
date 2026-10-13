@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
 
+	"github.com/asteby/metacore-kernel/genui"
 	"github.com/asteby/metacore-kernel/vector"
 )
 
@@ -26,6 +28,10 @@ type ChatEmbed struct {
 	// that returned no rows to show (usually 0), rendered as a card with the
 	// model's label instead of "Count: 0 / Model: products".
 	Count int `json:"count,omitempty"`
+	// UI is a validated generative-UI spec (Type "ui"): cards, KPIs, tables,
+	// links, timelines, charts or a confirmation form drawn from the SDK's
+	// whitelist. Any tool whose result carries a "ui" key produces one.
+	UI *genui.Spec `json:"ui,omitempty"`
 }
 
 const maxRecordEmbeds = 2
@@ -78,8 +84,26 @@ func (b *EmbedBuilder) FromToolResult(toolName string, result any, params map[st
 	case "generate_image":
 		return embedsFromImageResult(result)
 	default:
+		return embedsFromUIResult(result)
+	}
+}
+
+// embedsFromUIResult turns a tool result with a "ui" key into a "ui" embed.
+// Invalid specs are dropped (never rendered).
+func embedsFromUIResult(result any) []ChatEmbed {
+	m, ok := asMap(result)
+	if !ok {
 		return nil
 	}
+	raw, ok := m["ui"]
+	if !ok || raw == nil {
+		return nil
+	}
+	spec, err := genui.FromAny(raw)
+	if err != nil {
+		return nil
+	}
+	return []ChatEmbed{{Type: "ui", Title: spec.Title, UI: spec}}
 }
 
 func embedsFromImageResult(result any) []ChatEmbed {
@@ -499,6 +523,10 @@ func DedupeEmbeds(embeds []ChatEmbed) []ChatEmbed {
 			if e.Chart != nil {
 				key = fmt.Sprintf("chart|%s|%s|%d", e.Chart.Kind, e.Title, len(e.Chart.Rows))
 			}
+		}
+		if e.Type == "ui" && e.UI != nil {
+			b, _ := json.Marshal(e.UI)
+			key = "ui|" + string(b)
 		}
 		if _, ok := seen[key]; ok {
 			continue
