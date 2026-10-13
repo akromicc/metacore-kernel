@@ -151,6 +151,11 @@ func (r *Recorder) Handle(ctx context.Context, orgID uuid.UUID, payload any) err
 		After:          mapToJSONString(ce.After),
 		Changes:        computeChanges(ce.Before, ce.After),
 	}
+	if ce.Provenance != nil {
+		if js := ce.Provenance.JSON(); js != "" {
+			entry.Provenance = &js
+		}
+	}
 
 	// Optional actor denormalisation (in-memory only; not persisted).
 	if r.opts.resolver != nil && entry.ActorID != nil {
@@ -160,6 +165,8 @@ func (r *Recorder) Handle(ctx context.Context, orgID uuid.UUID, payload any) err
 	// NewDB: a clean session unaffected by any outer transaction on r.db.
 	// SkipHooks avoids re-triggering GORM callbacks (the audit table has none
 	// that matter, but this is defensive against host-registered global hooks).
+	// Entry.BeforeCreate leaves the provenance column out when it is nil, so
+	// audit tables created before it keep working.
 	if err := r.db.Session(&gorm.Session{NewDB: true, SkipHooks: false}).
 		Table(r.opts.tableName).
 		Create(&entry).Error; err != nil {
