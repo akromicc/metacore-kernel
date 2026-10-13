@@ -19,11 +19,16 @@ package marketplace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/asteby/metacore-kernel/auth"
@@ -145,6 +150,185 @@ type Handler struct {
 	installer     *installer.Installer
 	httpc         *http.Client
 	updateChecker UpdateChecker
+	// bundleHosts is the allowlist of lowercase host[:port] origins a
+	// bundleURL may point at (SSRF guard, see validateBundleURL). D5: it is
+	// mandatory — with no entries (and no WithAllowLoopbackBundles) bundle
+	// downloads are refused (fail-closed).
+	bundleHosts map[string]bool
+	// allowLoopback opts in to http:// and loopback bundle hosts (tests/dev).
+	allowLoopback bool
+}
+
+// ErrNoBundleOrigin is returned when a handler that downloads bundles has no
+// trusted origin configured. Bundle origin is mandatory and fail-closed.
+var ErrNoBundleOrigin = errors.New("marketplace: no bundle origin configured: set WithHubURL / MARKETPLACE_URL or WithBundleHostAllowlist")
+
+// WithAllowLoopbackBundles permits http:// and loopback bundle hosts
+// (127.0.0.0/8, ::1, localhost), exempt from the origin allowlist. Intended
+// for tests and local development only; private, link-local and metadata
+// ranges stay blocked.
+func WithAllowLoopbackBundles() HandlerOption {
+	return func(h *Handler) { h.allowLoopback = true }
+}
+
+// WithHubURL restricts bundle downloads to the origin (host[:port]) of the
+// given Hub/marketplace URL (typically MARKETPLACE_URL). Invalid or empty
+// values are ignored.
+func WithHubURL(raw string) HandlerOption {
+	return func(h *Handler) { h.allowBundleHost(raw) }
+}
+
+// WithBundleHostAllowlist adds extra permitted bundle origins (CDN, object
+// storage). Each entry is a bare host[:port] or a full URL.
+func WithBundleHostAllowlist(hosts ...string) HandlerOption {
+	return func(h *Handler) {
+		for _, x := range hosts {
+			h.allowBundleHost(x)
+		}
+	}
+}
+
+func (h *Handler) allowBundleHost(raw string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return
+	}
+	if h.bundleHosts == nil {
+		h.bundleHosts = map[string]bool{}
+	}
+	h.bundleHosts[strings.ToLower(u.Host)] = true
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// validateBundleURL is the SSRF guard for fetchBundle (D5): the origin is
+// mandatory (fail-closed when none is configured), only https is allowed
+// (http and loopback hosts only with WithAllowLoopbackBundles), no userinfo,
+// and the host must match the Hub origin / allowlist. This validates the URL;
+// the resolved/connected IP is checked separately by guardedControl at dial
+// time, which also covers DNS rebinding of an allowlisted name.
+func (h *Handler) validateBundleURL(raw string) error {
+	if len(h.bundleHosts) == 0 && !h.allowLoopback {
+		return ErrNoBundleOrigin
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid bundle URL: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "https" && scheme != "http" {
+		return fmt.Errorf("bundle URL scheme %q not allowed", u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("bundle URL has no host")
+	}
+	if u.User != nil {
+		return fmt.Errorf("bundle URL must not contain credentials")
+	}
+	loop := h.allowLoopback && isLoopbackHost(u.Hostname())
+	if scheme == "http" && !loop {
+		return fmt.Errorf("bundle URL must use https")
+	}
+	if !loop && !h.bundleHosts[strings.ToLower(u.Host)] {
+		return fmt.Errorf("bundle URL host %q is not an allowed marketplace origin", u.Host)
+	}
+	return nil
+}
+
+// blockedIP reports whether ip is in a range bundles must never be fetched
+// from: loopback (unless allowed), private, link-local (includes the
+// 169.254.169.254 IMDS), CGNAT, unspecified, multicast and IPv6 ULA/IMDS.
+func blockedIP(ip net.IP, allowLoopback bool) bool {
+	if ip4 := ip.To4(); ip4 != nil {
+		ip = ip4
+	}
+	if ip.IsLoopback() {
+		return !allowLoopback
+	}
+	if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		// 100.64.0.0/10 CGNAT, 0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15.
+		if ip4[0] == 100 && ip4[1]&0xc0 == 64 || ip4[0] == 0 ||
+			ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0 ||
+			ip4[0] == 198 && ip4[1]&0xfe == 18 {
+			return true
+		}
+	}
+	return false
+}
+
+// guardedControl is a net.Dialer.Control hook: it runs after DNS resolution
+// with the exact IP about to be connected, so a hostname that resolves (or
+// rebinds) to a private address is refused even when allowlisted.
+func guardedControl(allowLoopback bool) func(network, address string, c syscall.RawConn) error {
+	return func(network, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return fmt.Errorf("bundle dial blocked: bad address: %w", err)
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return fmt.Errorf("bundle dial blocked: non-IP address %q", host)
+		}
+		if blockedIP(ip, allowLoopback) {
+			return fmt.Errorf("bundle dial blocked: %s is a non-public address", ip)
+		}
+		return nil
+	}
+}
+
+// guardedClient returns a copy of the handler HTTP client whose transport
+// validates the connected IP and whose redirects re-run validateBundleURL.
+func (h *Handler) guardedClient() (*http.Client, error) {
+	client := *h.httpc
+	var tr *http.Transport
+	switch t := client.Transport.(type) {
+	case nil:
+		tr = http.DefaultTransport.(*http.Transport).Clone()
+		// A forward proxy would dial the target on our behalf and bypass
+		// the IP guard; the default bundle client connects directly.
+		tr.Proxy = nil
+	case *http.Transport:
+		tr = t.Clone()
+		// Same reasoning: a proxy would be the only peer the dial guard sees.
+		tr.Proxy = nil
+	default:
+		return nil, fmt.Errorf("bundle HTTP client has a custom transport that cannot be IP-guarded")
+	}
+	d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second, Control: guardedControl(h.allowLoopback)}
+	tr.DialContext = d.DialContext
+	tr.DialTLSContext = nil
+	client.Transport = tr
+	prev := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if err := h.validateBundleURL(req.URL.String()); err != nil {
+			return fmt.Errorf("redirect blocked: %w", err)
+		}
+		if prev != nil {
+			return prev(req, via)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &client, nil
 }
 
 // HandlerOption customises the handler.
@@ -177,8 +361,15 @@ func NewHandler(db *gorm.DB, opts ...HandlerOption) (*Handler, error) {
 		db:    db,
 		httpc: &http.Client{Timeout: 30 * time.Second},
 	}
+	// Default origin restriction: MARKETPLACE_URL, when set. Explicit options
+	// below add to it.
+	h.allowBundleHost(os.Getenv("MARKETPLACE_URL"))
 	for _, opt := range opts {
 		opt(h)
+	}
+	// D5: a handler that downloads bundles must have a trusted origin.
+	if h.installer != nil && len(h.bundleHosts) == 0 && !h.allowLoopback {
+		return nil, ErrNoBundleOrigin
 	}
 	return h, nil
 }
@@ -401,8 +592,15 @@ func extractRequires(b *bundle.Bundle) AddonKeyList {
 // Without this injection the bundle reaches the security gate as unsigned
 // and the install fails with "security: bundle has no signature" even
 // though the marketplace signed it correctly.
-func (h *Handler) fetchBundle(url, expectedKey string) (*bundle.Bundle, error) {
-	resp, err := h.httpc.Get(url)
+func (h *Handler) fetchBundle(bundleURL, expectedKey string) (*bundle.Bundle, error) {
+	if err := h.validateBundleURL(bundleURL); err != nil {
+		return nil, err
+	}
+	client, err := h.guardedClient()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Get(bundleURL)
 	if err != nil {
 		return nil, fmt.Errorf("download bundle: %w", err)
 	}
