@@ -91,6 +91,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **dates: lenient `Date` / `Time` column types** — accept `YYYY-MM-DD`,
+  `YYYY-MM-DDTHH:MM[:SS]` and RFC 3339 on JSON decode and DB scan; serialize
+  as `YYYY-MM-DD` / RFC 3339 UTC; zero ⇄ JSON null ⇄ SQL NULL. Lets compiled
+  models take the SDK form's bare dates through `/api/data/:model` without
+  "invalid request body". Upstreamed from gobiernos-ops `core/dates`.
+- **metakit: partial-update guard + metadata shorthands for compiled models** —
+  `metakit.Install(db)` registers GORM callbacks that validate `Updates(map)`
+  and map inserts (the writes `BeforeSave` cannot see): loads the target rows,
+  applies the map, refuses changes outside `DefineModal` fields (code
+  `protected_field`) unless the session is `metakit.Trusted(tx)`, and runs the
+  rule registered with `metakit.Guard[T](table, check, opts...)`. Also
+  `Opts`, `Col`, `DateCol`, `StatusCol`, `SelectCol`, `Text`, `Area`,
+  `Select`, `Date`, `Number`, `Bool`, `MapUpdate`, `Validation`. Opt-in: no
+  effect until `Install` is called. Upstreamed from gobiernos-ops `core/metakit`.
+- **modelbase/query: declared default list order** —
+  `TableMetadata.DefaultSortBy` / `DefaultSortOrder` (JSON `defaultSortBy` /
+  `defaultSortOrder`, omitempty) set the order `query.Builder` applies when the
+  request names no valid `sortBy` (e.g. runs by `started_at`). Only allowed,
+  safe columns are honored; otherwise the newest-first fallback stays.
 - **runtime/wasm: persistent compilation cache** — `wasm.WithCompileCacheDir` /
   `WASM_COMPILE_CACHE_DIR` (wazero `NewCompilationCacheWithDir`, dir created
   0700, falls back to memory if unusable). Processes and replicas that mount
