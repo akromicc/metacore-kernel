@@ -65,7 +65,7 @@ func (s *Service) view(a Automation, names map[uuid.UUID]string) View {
 	v := View{Automation: a, Spec: json.RawMessage(a.Spec)}
 	spec, err := a.ParsedSpec()
 	if err == nil {
-		v.TriggerLabel = DescribeTrigger(spec.Trigger, s.policy.DefaultTimezone)
+		v.TriggerLabel = describeTrigger(spec.Trigger, s.policy.DefaultTimezone, s.policy.EventLabels)
 		v.UsesLLM = spec.UsesLLM()
 		seen := map[string]bool{}
 		for _, st := range spec.Steps {
@@ -156,7 +156,7 @@ func (s *Service) CardUI(v View, preview *RunOutput) *genui.Spec {
 		}
 		fields = append(fields, genui.Field{Label: "Canales", Value: strings.Join(chs, ", ")})
 	}
-	ia := "No (consulta + plantilla, sin costo de IA)"
+	ia := "No (sin costo de IA)"
 	if v.UsesLLM {
 		ia = "Sí, resumen con modelo económico y tope por corrida"
 	}
@@ -186,10 +186,10 @@ func (s *Service) CardUI(v View, preview *RunOutput) *genui.Spec {
 		})
 	} else {
 		blocks = append(blocks, genui.Block{
-			Type: genui.BlockCard, Title: title, Subtitle: v.TriggerLabel,
+			Type: genui.BlockCard, Title: title,
 			Body:   v.Description,
 			Badges: []genui.Badge{{Label: StatusLabel(v.Status), Tone: statusTones[v.Status]}},
-			Fields: fields, Link: "/automatizaciones?id=" + v.ID.String(),
+			Fields: fields, Link: s.managePath + "?id=" + v.ID.String(),
 		})
 	}
 	if preview != nil {
@@ -198,23 +198,38 @@ func (s *Service) CardUI(v View, preview *RunOutput) *genui.Spec {
 	return &genui.Spec{Version: genui.Version, Blocks: blocks}
 }
 
+// previewItems caps the items shown in a chat card.
+const previewItems = 5
+
 // PreviewBlocks renders a (dry-run) output: the message and its items.
 func PreviewBlocks(out *RunOutput) []genui.Block {
 	var blocks []genui.Block
 	if out.Text != "" || out.Title != "" {
+		text := out.Text
+		if len(out.Items) > 0 {
+			// The items go in the links block below: keep only the lead line.
+			text, _, _ = strings.Cut(text, "\n")
+		}
 		blocks = append(blocks, genui.Block{Type: genui.BlockText, Tone: "muted",
-			Text: truncate(strings.TrimSpace("Vista previa — "+out.Title+"\n"+out.Text), genui.MaxText)})
+			Text: truncate(strings.TrimSpace("Vista previa (no se envió nada) — "+out.Title+"\n"+text), genui.MaxText)})
 	}
 	if len(out.Items) > 0 {
 		items := make([]genui.Item, 0, len(out.Items))
-		for _, it := range out.Items {
-			gi := genui.Item{Title: truncate(it.Title, genui.MaxLabel), Date: it.Date, Description: truncate(it.Text, 300)}
+		for i, it := range out.Items {
+			if i == previewItems {
+				break
+			}
+			gi := genui.Item{Title: truncate(it.Title, genui.MaxLabel), Date: it.Date, Description: truncate(it.Text, 160)}
 			if genui.SafeLink(it.URL) {
 				gi.URL = it.URL
 			}
 			items = append(items, gi)
 		}
-		blocks = append(blocks, genui.Block{Type: genui.BlockLinks, Title: fmt.Sprintf("%d elementos", len(items)), Items: items})
+		title := fmt.Sprintf("%d elementos", len(out.Items))
+		if len(out.Items) > len(items) {
+			title = fmt.Sprintf("%d elementos (se muestran %d)", len(out.Items), len(items))
+		}
+		blocks = append(blocks, genui.Block{Type: genui.BlockLinks, Title: title, Items: items})
 	}
 	for _, n := range out.Notes {
 		blocks = append(blocks, genui.Block{Type: genui.BlockText, Tone: "info", Text: n})

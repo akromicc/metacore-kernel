@@ -64,6 +64,9 @@ type Config struct {
 	SkipMigrate bool
 	// RunMaxAttempts is the outbox attempt budget for a run (default 3).
 	RunMaxAttempts int
+	// ManagePath is the app route of the automations screen, used by the
+	// cards' links (default "/automations").
+	ManagePath string
 }
 
 // Service is the automation runtime.
@@ -81,6 +84,7 @@ type Service struct {
 	log        *slog.Logger
 	maxAtt     int
 	engine     *runEngine
+	managePath string
 }
 
 // New builds the service, migrates its tables (unless SkipMigrate) and
@@ -103,6 +107,10 @@ func New(cfg Config) (*Service, error) {
 		now:        cfg.Now,
 		log:        cfg.Logger,
 		maxAtt:     cfg.RunMaxAttempts,
+		managePath: cfg.ManagePath,
+	}
+	if s.managePath == "" {
+		s.managePath = "/automations"
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -231,7 +239,7 @@ func (s *Service) Create(ctx context.Context, id Identity, in CreateInput) (*Aut
 	if proposal {
 		action = "proposed"
 	}
-	s.audit(ctx, a, id.UserID, action, DescribeTrigger(spec.Trigger, s.policy.DefaultTimezone))
+	s.audit(ctx, a, id.UserID, action, describeTrigger(spec.Trigger, s.policy.DefaultTimezone, s.policy.EventLabels))
 	return a, nil
 }
 

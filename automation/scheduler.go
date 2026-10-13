@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -252,9 +253,13 @@ func (s *Service) markError(tx *gorm.DB, a *Automation, reason string) {
 	s.audit(context.Background(), a, uuid.Nil, "error", reason)
 }
 
+// truncate cuts s to at most n bytes without splitting a UTF-8 character.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }

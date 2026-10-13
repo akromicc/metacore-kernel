@@ -87,6 +87,29 @@ var weekdaysES = []string{"domingo", "lunes", "martes", "miércoles", "jueves", 
 // (America/Mexico_City)") for cards and lists. Unknown shapes fall back to the
 // raw expression.
 func DescribeTrigger(t *Trigger, defaultTZ string) string {
+	return describeTrigger(t, defaultTZ, nil)
+}
+
+var opLabels = map[string]string{
+	"eq": "es", "ne": "no es", "contains": "contiene", "not_contains": "no contiene", "gt": "mayor que",
+	"gte": "al menos", "lt": "menor que", "lte": "como máximo", "in": "es", "is_empty": "está vacío", "is_not_empty": "tiene valor",
+}
+
+func describeValue(v any) string {
+	if list, ok := v.([]any); ok {
+		parts := make([]string, 0, len(list))
+		for _, x := range list {
+			parts = append(parts, fmt.Sprint(x))
+		}
+		return strings.Join(parts, " o ")
+	}
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprint(v)
+}
+
+func describeTrigger(t *Trigger, defaultTZ string, eventLabels map[string]string) string {
 	if t == nil {
 		return "Bajo demanda (herramienta)"
 	}
@@ -113,12 +136,19 @@ func DescribeTrigger(t *Trigger, defaultTZ string) string {
 		return "Cada " + humanDuration(d)
 	case TriggerEvent:
 		s := "Cuando ocurra «" + t.Event + "»"
+		if l, ok := eventLabels[t.Event]; ok && l != "" {
+			s = "Cuando " + l
+		}
 		if len(t.Where) > 0 {
 			parts := make([]string, 0, len(t.Where))
 			for _, w := range t.Where {
-				parts = append(parts, fmt.Sprintf("%s %s %v", w.Field, w.Op, w.Value))
+				op := opLabels[w.Op]
+				if op == "" {
+					op = w.Op
+				}
+				parts = append(parts, strings.TrimSpace(fmt.Sprintf("%s %s %s", w.Field, op, describeValue(w.Value))))
 			}
-			s += " con " + strings.Join(parts, ", ")
+			s += " (" + strings.Join(parts, "; ") + ")"
 		}
 		return s
 	case TriggerCron:

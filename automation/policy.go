@@ -41,6 +41,9 @@ type Policy struct {
 	MaxOnceHorizon time.Duration
 	// RunTimeout bounds a single run.
 	RunTimeout time.Duration
+	// EventLabels names the host's domain events in descriptions
+	// ("gobiernos.alert.opened" → "se abra una alerta").
+	EventLabels map[string]string
 }
 
 // DefaultPolicy is conservative: 20 automations per person, 15 minutes minimum
