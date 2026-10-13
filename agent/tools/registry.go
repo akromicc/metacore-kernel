@@ -310,7 +310,22 @@ func (r ToolResult) FormatForLLM() string {
 		return fmt.Sprintf("Error executing %s: %s", r.ToolName, r.Error)
 	}
 
-	jsonBytes, err := json.MarshalIndent(r.Result, "", "  ")
+	result := r.Result
+	// A generative-UI spec is for the screen, not for the model: drop it to
+	// save tokens and keep the model from echoing markup.
+	if m, ok := result.(map[string]interface{}); ok {
+		if _, has := m["ui"]; has {
+			cp := make(map[string]interface{}, len(m))
+			for k, v := range m {
+				if k != "ui" {
+					cp[k] = v
+				}
+			}
+			cp["ui"] = "(tarjeta mostrada en pantalla)"
+			result = cp
+		}
+	}
+	jsonBytes, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return fmt.Sprintf("Result of %s: %v", r.ToolName, r.Result)
 	}

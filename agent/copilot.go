@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/asteby/metacore-kernel/agent/tools"
 )
 
 // Context metadata keys the copilot uses to hand attachment data to the loop.
@@ -84,6 +86,10 @@ type CopilotConfig struct {
 	RecordTitle func(created map[string]any, modelTitle string) string
 	// LiveSuffix is appended to the system prompt in voice mode.
 	LiveSuffix string
+	// TurnTools adds per-org/per-user tools for one turn on top of the
+	// orchestrator registry (for example the organisation's dynamic tools).
+	// Optional.
+	TurnTools func(ctx context.Context, orgID, userID uuid.UUID) []tools.BaseTool
 }
 
 // CopilotService runs turns of the embedded copilot and applies the changes
@@ -203,6 +209,7 @@ func (s *CopilotService) ProcessCopilotMessage(ctx context.Context, orgID, userI
 		AgentID:        uuid.Nil, // transient agent: no tools row to look up
 		UserMessage:    enriched,
 		SystemPrompt:   prompt,
+		ExtraTools:     s.turnTools(ctx, orgID, userID),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("copilot processing failed: %w", err)
@@ -210,6 +217,13 @@ func (s *CopilotService) ProcessCopilotMessage(ctx context.Context, orgID, userI
 	result := ToProcessResult(response)
 	result.Proposals = s.cfg.Proposals.ListPending(sessionID, userID)
 	return result, nil
+}
+
+func (s *CopilotService) turnTools(ctx context.Context, orgID, userID uuid.UUID) []tools.BaseTool {
+	if s.cfg.TurnTools == nil {
+		return nil
+	}
+	return s.cfg.TurnTools(ctx, orgID, userID)
 }
 
 // ApplyProposal executes or rejects a pending mutation after the user decides

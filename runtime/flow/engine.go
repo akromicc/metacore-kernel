@@ -198,7 +198,22 @@ type TestResult struct {
 // TestFlowInline runs a flow synchronously without touching the Store. Used
 // by editor "Test" buttons and by unit tests. The timeout is Config.TestTimeout.
 func (e *Engine) TestFlowInline(flow *Flow, triggerData map[string]interface{}, appContext map[string]interface{}) (*TestResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), e.cfg.TestTimeout)
+	return e.ExecuteSync(context.Background(), flow, triggerData, appContext)
+}
+
+// ExecuteSync runs a flow synchronously under parent (cancellation and values
+// such as a run identity reach every NodeExecutor), bounded by
+// Config.TestTimeout, without touching the Store. Hosts that persist their own
+// run records (for example the automation runtime) use it instead of the
+// asynchronous ExecuteFlow.
+func (e *Engine) ExecuteSync(parent context.Context, flow *Flow, triggerData map[string]interface{}, appContext map[string]interface{}) (*TestResult, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if flow == nil {
+		return nil, fmt.Errorf("flow: nil flow")
+	}
+	ctx, cancel := context.WithTimeout(parent, e.cfg.TestTimeout)
 	defer cancel()
 
 	execCtx := NewExecutionContext(flow, flow.TriggerType, triggerData)
