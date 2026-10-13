@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/asteby/metacore-kernel/provenance"
 	"hash/fnv"
 	"strings"
 	"sync"
@@ -275,7 +276,7 @@ func (s *Service) run(ctx context.Context, a *Automation, spec *Spec, id Identit
 	for k, v := range vars {
 		f.Variables = append(f.Variables, flow.FlowVariable{Name: k, Value: v})
 	}
-	rctx := context.WithValue(ctx, envKey{}, env)
+	rctx := context.WithValue(runProvenance(ctx, s.policy.AssistantName, a, id, run, inputs != nil), envKey{}, env)
 	res, err := s.engine.engine.ExecuteSync(rctx, f, trigger, nil)
 	if err != nil {
 		return env, err
@@ -987,4 +988,25 @@ func hashOf(s string) string {
 	h := fnv.New64a()
 	h.Write([]byte(s))
 	return fmt.Sprintf("%016x", h.Sum64())
+}
+
+// runProvenance stamps what a run writes (through the host catalog, the
+// deliverer, notifications) as the agent acting on behalf of the automation
+// owner — or of the person calling a dynamic tool from the chat. Nobody
+// approved each run, so the mode is automated; a caller that already put a
+// provenance in ctx (e.g. an approved proposal) keeps it and only gains the
+// run reference.
+func runProvenance(ctx context.Context, agent string, a *Automation, id Identity, run *Run, tool bool) context.Context {
+	ref := func(p provenance.Provenance) provenance.Provenance {
+		return p.WithRef(provenance.RefAutomationRun, run.ID.String())
+	}
+	if _, ok := provenance.FromContext(ctx); ok {
+		return provenance.Update(ctx, ref)
+	}
+	via := provenance.ViaAutomation
+	if tool {
+		via = provenance.ViaChat
+	}
+	p := provenance.Agent(agent, via).OnBehalf(id.UserID).WithSession(id.SessionID).WithOrigin(a.Name)
+	return provenance.WithContext(ctx, ref(p))
 }
