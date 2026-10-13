@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"github.com/asteby/metacore-kernel/provenance"
 	"log"
 	"strings"
 	"time"
@@ -90,6 +91,13 @@ type CopilotConfig struct {
 	// orchestrator registry (for example the organisation's dynamic tools).
 	// Optional.
 	TurnTools func(ctx context.Context, orgID, userID uuid.UUID) []tools.BaseTool
+	// ProposalSummary phrases what the agent proposed, for the provenance of
+	// an approved proposal ("Propuso crear Hallazgo «…»"). Optional; the
+	// default is "<action> <model title>".
+	ProposalSummary func(p *MutationProposal) string
+	// ProposalOrigin labels where approvals happen ("Borrador aprobado en el
+	// chat"). Optional.
+	ProposalOrigin string
 }
 
 // CopilotService runs turns of the embedded copilot and applies the changes
@@ -229,6 +237,16 @@ func (s *CopilotService) turnTools(ctx context.Context, orgID, userID uuid.UUID)
 // ApplyProposal executes or rejects a pending mutation after the user decides
 // in chat. A proposal can only be decided by its own org and user.
 func (s *CopilotService) ApplyProposal(orgID, userID, proposalID uuid.UUID, approve bool) (*MutationProposal, map[string]any, error) {
+	return s.ApplyProposalContext(context.Background(), orgID, userID, proposalID, approve)
+}
+
+// ApplyProposalContext is ApplyProposal bound to ctx. The write is stamped as
+// "person with agent": provenance assisted, actor the agent, authorized_by and
+// on_behalf_of the person who approved, ref the proposal and the session.
+func (s *CopilotService) ApplyProposalContext(ctx context.Context, orgID, userID, proposalID uuid.UUID, approve bool) (*MutationProposal, map[string]any, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	store := s.cfg.Proposals
 	p, ok := store.Get(proposalID)
 	if !ok || p.OrganizationID != orgID || p.UserID != userID {
@@ -254,11 +272,12 @@ func (s *CopilotService) ApplyProposal(orgID, userID, proposalID uuid.UUID, appr
 	}
 
 	identity := &AgentIdentity{OrganizationID: orgID, UserID: userID}
+	ctx = provenance.WithContext(ctx, s.ProposalProvenance(p, userID))
 	var result map[string]any
 	var err error
 	switch p.Action {
 	case "create":
-		created, cerr := s.cfg.CRUD.Create(identity, MutateRequest{Model: p.Model, Data: cloneMap(p.Data)})
+		created, cerr := s.cfg.CRUD.CreateContext(ctx, identity, MutateRequest{Model: p.Model, Data: cloneMap(p.Data)})
 		err, result = cerr, created
 		if created != nil {
 			if id, ok := created["id"]; ok {
@@ -270,10 +289,10 @@ func (s *CopilotService) ApplyProposal(orgID, userID, proposalID uuid.UUID, appr
 			}
 		}
 	case "update":
-		err = s.cfg.CRUD.Update(identity, MutateRequest{Model: p.Model, RecordID: p.RecordID, Data: cloneMap(p.Data)})
+		err = s.cfg.CRUD.UpdateContext(ctx, identity, MutateRequest{Model: p.Model, RecordID: p.RecordID, Data: cloneMap(p.Data)})
 		result = map[string]any{"status": "updated", "model": p.Model, "record_id": p.RecordID}
 	case "delete":
-		err = s.cfg.CRUD.Delete(identity, MutateRequest{Model: p.Model, RecordID: p.RecordID})
+		err = s.cfg.CRUD.DeleteContext(ctx, identity, MutateRequest{Model: p.Model, RecordID: p.RecordID})
 		result = map[string]any{"status": "deleted", "model": p.Model, "record_id": p.RecordID}
 	default:
 		return nil, nil, fmt.Errorf("unknown action %s", p.Action)
@@ -286,12 +305,40 @@ func (s *CopilotService) ApplyProposal(orgID, userID, proposalID uuid.UUID, appr
 	return p, result, nil
 }
 
+// ProposalProvenance is the provenance of applying p once userID approved it.
+func (s *CopilotService) ProposalProvenance(p *MutationProposal, userID uuid.UUID) provenance.Provenance {
+	agentName := ""
+	if s.cfg.Brand != nil {
+		agentName = s.cfg.Brand.PersonalityFor(p.OrganizationID).Name
+	}
+	summary := ""
+	if s.cfg.ProposalSummary != nil {
+		summary = s.cfg.ProposalSummary(p)
+	} else {
+		title := p.ModelTitle
+		if title == "" {
+			title = p.Model
+		}
+		summary = strings.TrimSpace(p.Action + " " + title)
+	}
+	return provenance.Assisted(agentName, userID, provenance.ViaChat).
+		WithRef(provenance.RefProposal, p.ID.String()).
+		WithSession(p.SessionID).
+		WithSummary(summary).
+		WithOrigin(s.cfg.ProposalOrigin)
+}
+
 // ApplyProposalsBatch applies or rejects many pending proposals (same
 // org/user). It stops on the first error and returns those done before it.
 func (s *CopilotService) ApplyProposalsBatch(orgID, userID uuid.UUID, ids []uuid.UUID, approve bool) (applied []*MutationProposal, err error) {
+	return s.ApplyProposalsBatchContext(context.Background(), orgID, userID, ids, approve)
+}
+
+// ApplyProposalsBatchContext is ApplyProposalsBatch bound to ctx.
+func (s *CopilotService) ApplyProposalsBatchContext(ctx context.Context, orgID, userID uuid.UUID, ids []uuid.UUID, approve bool) (applied []*MutationProposal, err error) {
 	applied = make([]*MutationProposal, 0, len(ids))
 	for _, id := range ids {
-		p, _, aerr := s.ApplyProposal(orgID, userID, id, approve)
+		p, _, aerr := s.ApplyProposalContext(ctx, orgID, userID, id, approve)
 		if aerr != nil {
 			return applied, aerr
 		}

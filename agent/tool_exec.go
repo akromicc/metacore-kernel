@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/asteby/metacore-kernel/provenance"
+	"github.com/google/uuid"
 	"log"
 	"math/rand"
 	"sync"
@@ -161,6 +163,7 @@ func (o *AgentOrchestrator) runOne(ctx context.Context, call tools.ToolCall, con
 		tr.Error, tr.Attempts = res.Error, 1
 		return res, tr
 	}
+	ctx = toolCallProvenance(ctx, o.agentName, call, convCtx)
 	timeout := o.toolTimeout(tool)
 	retries := o.toolRetries()
 	var (
@@ -240,4 +243,30 @@ func (o *AgentOrchestrator) progressLabel(registry *tools.ToolRegistry, tc tools
 		}
 	}
 	return o.describeToolCall(tc.ToolName, tc.Parameters)
+}
+
+// toolCallProvenance stamps what a tool writes as the agent, on behalf of the
+// person in the conversation, pointing at this tool call. A person's own
+// (manual) provenance from the HTTP edge is replaced — the tool, not the
+// person, is writing; an agent/system provenance set upstream (an automation)
+// keeps its actor and only gains the tool-call ref. Writes that need a person's
+// approval go through proposals (ApplyProposalContext → assisted).
+func toolCallProvenance(ctx context.Context, agentName string, call tools.ToolCall, convCtx *contextmgr.ConversationContext) context.Context {
+	var user, session uuid.UUID
+	if convCtx != nil {
+		user, session = convCtx.UserID, convCtx.ConversationID
+	}
+	p, ok := provenance.FromContext(ctx)
+	if ok && p.ActorKind != provenance.ActorHuman {
+		return provenance.WithContext(ctx, p.WithRef(provenance.RefToolCall, call.ID))
+	}
+	if ok && p.ActorID != nil && user == uuid.Nil {
+		user = *p.ActorID
+	}
+	if user == uuid.Nil && !ok {
+		return ctx
+	}
+	np := provenance.Agent(agentName, provenance.ViaChat).OnBehalf(user).WithSession(session).
+		WithRef(provenance.RefToolCall, call.ID).WithOrigin(call.ToolName)
+	return provenance.WithContext(ctx, np)
 }
