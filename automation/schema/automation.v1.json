@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://metacore.asteby.com/schemas/automation.v1.json",
+  "title": "Metacore automation (v1)",
+  "description": "Declarative automation or dynamic tool. Steps only compose registered tools, filters, conditions, templates, optional summaries and notification deliveries. No HTTP, SQL, shell or code.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "name", "steps"],
+  "properties": {
+    "schema_version": { "const": "automation/v1" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "description": { "type": "string", "maxLength": 500 },
+    "trigger": { "$ref": "#/$defs/trigger" },
+    "inputs": {
+      "type": "array", "maxItems": 8,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["name", "type"],
+        "properties": {
+          "name": { "$ref": "#/$defs/ident" },
+          "type": { "enum": ["string", "integer", "number", "boolean"] },
+          "description": { "type": "string", "maxLength": 300 },
+          "required": { "type": "boolean" },
+          "enum": { "type": "array", "maxItems": 30, "items": { "type": "string", "maxLength": 80 } },
+          "default": { "type": ["string", "number", "integer", "boolean"] }
+        }
+      }
+    },
+    "steps": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/$defs/step" } },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "max_tokens_per_run": { "type": "integer", "minimum": 0, "maximum": 20000 },
+        "max_cost_usd_per_run": { "type": "number", "minimum": 0, "maximum": 5 },
+        "max_runs_per_day": { "type": "integer", "minimum": 0, "maximum": 96 }
+      }
+    }
+  },
+  "$defs": {
+    "ident": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$" },
+    "path": { "type": "string", "pattern": "^[A-Za-z_$][A-Za-z0-9_.$]{0,119}$" },
+    "text": { "type": "string", "maxLength": 2000 },
+    "scalar": { "type": ["string", "number", "integer", "boolean", "null"] },
+    "condition": {
+      "type": "object", "additionalProperties": false, "required": ["field", "op"],
+      "properties": {
+        "field": { "$ref": "#/$defs/path" },
+        "op": { "enum": ["eq", "ne", "contains", "not_contains", "gt", "gte", "lt", "lte", "in", "is_empty", "is_not_empty"] },
+        "value": {
+          "oneOf": [
+            { "$ref": "#/$defs/scalar" },
+            { "type": "array", "maxItems": 30, "items": { "type": ["string", "number", "integer", "boolean"] } }
+          ]
+        }
+      }
+    },
+    "trigger": {
+      "type": "object", "additionalProperties": false, "required": ["type"],
+      "properties": {
+        "type": { "enum": ["cron", "interval", "once", "event"] },
+        "cron": { "type": "string", "maxLength": 100 },
+        "timezone": { "type": "string", "maxLength": 64 },
+        "every": { "type": "string", "maxLength": 20 },
+        "at": { "type": "string", "maxLength": 40 },
+        "event": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_*]+){0,5}$" },
+        "where": { "type": "array", "maxItems": 6, "items": { "$ref": "#/$defs/condition" } },
+        "cooldown": { "type": "string", "maxLength": 20 }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "cron" } } }, "then": { "required": ["cron"] } },
+        { "if": { "properties": { "type": { "const": "interval" } } }, "then": { "required": ["every"] } },
+        { "if": { "properties": { "type": { "const": "once" } } }, "then": { "required": ["at"] } },
+        { "if": { "properties": { "type": { "const": "event" } } }, "then": { "required": ["event"] } }
+      ]
+    },
+    "args": {
+      "type": "object", "maxProperties": 12,
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,39}$" },
+      "additionalProperties": {
+        "oneOf": [
+          { "$ref": "#/$defs/scalar" },
+          { "type": "array", "maxItems": 20, "items": { "type": ["string", "number", "integer", "boolean"] } }
+        ]
+      }
+    },
+    "step": {
+      "type": "object", "additionalProperties": false, "required": ["id", "type"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ident" },
+        "type": { "enum": ["tool", "filter", "condition", "template", "summarize", "deliver"] },
+        "tool": { "type": "string", "pattern": "^[a-z][a-z0-9_.:-]{0,63}$" },
+        "args": { "$ref": "#/$defs/args" },
+        "from": { "$ref": "#/$defs/path" },
+        "where": { "type": "array", "maxItems": 6, "items": { "$ref": "#/$defs/condition" } },
+        "unseen": { "type": "boolean" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+        "if": { "$ref": "#/$defs/condition" },
+        "template": { "$ref": "#/$defs/text" },
+        "mode": { "enum": ["template", "llm"] },
+        "instructions": { "type": "string", "maxLength": 600 },
+        "max_tokens": { "type": "integer", "minimum": 16, "maximum": 4000 },
+        "channels": {
+          "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true,
+          "items": { "enum": ["in_app", "push", "email", "whatsapp"] }
+        },
+        "title": { "type": "string", "maxLength": 160 },
+        "body": { "$ref": "#/$defs/text" },
+        "link": { "type": "string", "maxLength": 300 },
+        "items_from": { "$ref": "#/$defs/path" }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "tool" } } }, "then": { "required": ["tool"] } },
+        { "if": { "properties": { "type": { "const": "filter" } } }, "then": { "required": ["from"] } },
+        { "if": { "properties": { "type": { "const": "condition" } } }, "then": { "required": ["if"] } },
+        { "if": { "properties": { "type": { "const": "template" } } }, "then": { "required": ["template"] } },
+        { "if": { "properties": { "type": { "const": "summarize" } } }, "then": { "required": ["from"] } },
+        { "if": { "properties": { "type": { "const": "deliver" } } }, "then": { "required": ["channels", "title"] } }
+      ]
+    }
+  }
+}
