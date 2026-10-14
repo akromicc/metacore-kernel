@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"reflect"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +40,10 @@ type Entry struct {
 	After          *string    `json:"after,omitempty" gorm:"type:jsonb"`
 	Changes        *string    `json:"changes,omitempty" gorm:"type:jsonb"` // field-level diff (updates)
 	OccurredAt     time.Time  `json:"occurred_at" gorm:"index"`
+	// Provenance is the JSON provenance of the change (provenance.Provenance):
+	// person, agent, system or integration, and the mode (manual, assisted,
+	// automated). Nil when the write carried none (legacy behaviour).
+	Provenance *string `json:"provenance,omitempty" gorm:"type:jsonb"`
 
 	// ActorName / ActorEmail are NOT persisted by the kernel. They are populated
 	// in-memory by an optional ActorResolver (Recorder write-side) or left empty.
@@ -50,7 +55,14 @@ type Entry struct {
 
 // BeforeCreate fills the primary key and OccurredAt if the caller left them
 // zero, so a host can construct an Entry with just the business fields.
-func (e *Entry) BeforeCreate(_ *gorm.DB) error {
+//
+// When no entry of the statement carries a provenance, the column is left out
+// of the INSERT so audit tables created before it existed keep accepting
+// rows written directly by hosts.
+func (e *Entry) BeforeCreate(tx *gorm.DB) error {
+	if tx != nil && tx.Statement != nil && !anyProvenance(tx.Statement.ReflectValue) {
+		tx.Statement.Omits = append(tx.Statement.Omits, "provenance")
+	}
 	if e.ID == uuid.Nil {
 		e.ID = uuid.New()
 	}
@@ -58,4 +70,26 @@ func (e *Entry) BeforeCreate(_ *gorm.DB) error {
 		e.OccurredAt = time.Now().UTC()
 	}
 	return nil
+}
+
+func anyProvenance(rv reflect.Value) bool {
+	for rv.IsValid() && rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return false
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Struct:
+		if e, ok := rv.Addr().Interface().(*Entry); ok {
+			return e.Provenance != nil
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < rv.Len(); i++ {
+			if anyProvenance(rv.Index(i)) {
+				return true
+			}
+		}
+	}
+	return false
 }

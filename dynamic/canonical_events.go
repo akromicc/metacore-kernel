@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/asteby/metacore-kernel/provenance"
 	"strings"
 	"time"
 
@@ -56,6 +57,10 @@ type CanonicalEvent struct {
 	// (delete, or an action listed in Model.reason_required — PER-4). Empty on
 	// every other event.
 	Reason string `json:"reason,omitempty"`
+	// Provenance is who made the change and how (person, agent, system,
+	// integration, or a person with an agent), copied from the request/job
+	// context (provenance.WithContext). Nil when the caller set none.
+	Provenance *provenance.Provenance `json:"provenance,omitempty"`
 }
 
 // correlationIDKey is an unexported typed key used to store a correlation ID
@@ -205,6 +210,7 @@ func (s *Service) publishCanonical(ctx context.Context, model, action string, us
 		BranchID:      EventBranchID(withUserBranch(ctx, user), before, after),
 		CorrelationID: CorrelationIDFromContext(ctx),
 		Reason:        ReasonFromContext(ctx),
+		Provenance:    provenanceFromContext(ctx),
 		Before:        before,
 		After:         after,
 	}
@@ -247,4 +253,12 @@ func withUserBranch(ctx context.Context, user any) context.Context {
 		return WithBranchID(ctx, b.GetBranchID().String())
 	}
 	return ctx
+}
+
+// provenanceFromContext copies the request/job provenance for the event.
+func provenanceFromContext(ctx context.Context) *provenance.Provenance {
+	if p, ok := provenance.FromContext(ctx); ok {
+		return &p
+	}
+	return nil
 }

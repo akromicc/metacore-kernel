@@ -66,6 +66,9 @@ type AudioToSend struct {
 
 // OrchestratorConfig wires an AgentOrchestrator to the host.
 type OrchestratorConfig struct {
+	// AgentName labels the agent in the provenance of what its tools write
+	// ("Gobi"). Optional.
+	AgentName string
 	// Tools are the base tools; each turn works on a Clone.
 	Tools *tools.ToolRegistry
 	// Context keeps per-conversation state.
@@ -128,6 +131,7 @@ type AgentOrchestrator struct {
 	maxIterations  int
 	streamCallback StreamCallback
 	policy         toolPolicy
+	agentName      string
 }
 
 // NewAgentOrchestrator builds an orchestrator from cfg.
@@ -147,6 +151,7 @@ func NewAgentOrchestrator(cfg OrchestratorConfig) *AgentOrchestrator {
 		catalog:       cfg.Catalog,
 		models:        cfg.Models,
 		maxIterations: max,
+		agentName:     cfg.AgentName,
 		policy: toolPolicy{
 			ToolTimeout:        cfg.ToolTimeout,
 			ToolRetries:        cfg.ToolRetries,

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asteby/metacore-kernel/provenance"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -318,6 +320,12 @@ func (s *CRUDService) Aggregate(identity *AgentIdentity, req AggregateRequest) (
 
 // Create inserts a record (permission-checked) and queues re-indexing.
 func (s *CRUDService) Create(identity *AgentIdentity, req MutateRequest) (map[string]any, error) {
+	return s.CreateContext(context.Background(), identity, req)
+}
+
+// CreateContext is Create bound to ctx: a provenance carried by ctx
+// (provenance.WithContext) is stamped on the new record.
+func (s *CRUDService) CreateContext(ctx context.Context, identity *AgentIdentity, req MutateRequest) (map[string]any, error) {
 	raw := strings.TrimSpace(req.Model)
 	req.Model = s.resolve(req.Model)
 	if err := guardResolvedModel(raw, req.Model); err != nil {
@@ -337,7 +345,7 @@ func (s *CRUDService) Create(identity *AgentIdentity, req MutateRequest) (map[st
 	id := uuid.New()
 	req.Data["id"] = id
 
-	if err := s.cfg.DB.Table(table).Create(req.Data).Error; err != nil {
+	if err := s.cfg.DB.WithContext(ctx).Table(table).Create(req.Data).Error; err != nil {
 		return nil, fmt.Errorf("create failed: %w", err)
 	}
 	if s.cfg.Index != nil {
@@ -349,6 +357,11 @@ func (s *CRUDService) Create(identity *AgentIdentity, req MutateRequest) (map[st
 
 // Update modifies a record (permission-checked, org-scoped).
 func (s *CRUDService) Update(identity *AgentIdentity, req MutateRequest) error {
+	return s.UpdateContext(context.Background(), identity, req)
+}
+
+// UpdateContext is Update bound to ctx (provenance, cancellation).
+func (s *CRUDService) UpdateContext(ctx context.Context, identity *AgentIdentity, req MutateRequest) error {
 	raw := strings.TrimSpace(req.Model)
 	req.Model = s.resolve(req.Model)
 	if err := guardResolvedModel(raw, req.Model); err != nil {
@@ -371,7 +384,7 @@ func (s *CRUDService) Update(identity *AgentIdentity, req MutateRequest) error {
 		return fmt.Errorf("no writable fields to update")
 	}
 
-	res := s.cfg.DB.Table(table).
+	res := s.cfg.DB.WithContext(ctx).Table(table).
 		Where("id = ? AND organization_id = ?", req.RecordID, identity.OrganizationID).
 		Updates(req.Data)
 	if res.Error != nil {
@@ -380,6 +393,7 @@ func (s *CRUDService) Update(identity *AgentIdentity, req MutateRequest) error {
 	if res.RowsAffected == 0 {
 		return fmt.Errorf("record not found or access denied")
 	}
+	recordChange(ctx, s.cfg.DB, identity.OrganizationID, table, req.RecordID, provenance.ActionUpdated)
 	if rid, err := uuid.Parse(req.RecordID); err == nil && s.cfg.Index != nil {
 		go s.cfg.Index.EnqueueRecord(req.Model, rid)
 	}
@@ -389,6 +403,11 @@ func (s *CRUDService) Update(identity *AgentIdentity, req MutateRequest) error {
 
 // Delete soft-deletes a record (permission-checked, org-scoped).
 func (s *CRUDService) Delete(identity *AgentIdentity, req MutateRequest) error {
+	return s.DeleteContext(context.Background(), identity, req)
+}
+
+// DeleteContext is Delete bound to ctx (provenance, cancellation).
+func (s *CRUDService) DeleteContext(ctx context.Context, identity *AgentIdentity, req MutateRequest) error {
 	raw := strings.TrimSpace(req.Model)
 	req.Model = s.resolve(req.Model)
 	if err := guardResolvedModel(raw, req.Model); err != nil {
@@ -405,7 +424,7 @@ func (s *CRUDService) Delete(identity *AgentIdentity, req MutateRequest) error {
 		return fmt.Errorf("record_id required for delete")
 	}
 
-	res := s.cfg.DB.Table(table).
+	res := s.cfg.DB.WithContext(ctx).Table(table).
 		Where("id = ? AND organization_id = ? AND deleted_at IS NULL", req.RecordID, identity.OrganizationID).
 		Update("deleted_at", time.Now().UTC())
 	if res.Error != nil {
@@ -414,11 +433,25 @@ func (s *CRUDService) Delete(identity *AgentIdentity, req MutateRequest) error {
 	if res.RowsAffected == 0 {
 		return fmt.Errorf("record not found or access denied")
 	}
+	recordChange(ctx, s.cfg.DB, identity.OrganizationID, table, req.RecordID, provenance.ActionDeleted)
 	log.Printf("Agent CRUD: deleted %s/%s by agent %s", req.Model, req.RecordID, identity.AgentID)
 	return nil
 }
 
 // --- helpers ---
+
+// recordChange stores the provenance of an update/delete made by condition
+// (the GORM hook cannot see the record id of a Where(...).Updates). Creates
+// carry their id and are stamped by the hook. No provenance in ctx → no-op.
+func recordChange(ctx context.Context, db *gorm.DB, orgID uuid.UUID, table, recordID, action string) {
+	p, ok := provenance.FromContext(ctx)
+	if !ok || db == nil || !provenance.Registered(db) {
+		return
+	}
+	if err := provenance.NewStore(db).Record(ctx, provenance.NewEntry(orgID, table, recordID, action, p, time.Now())); err != nil {
+		log.Printf("Agent CRUD: provenance %s %s/%s: %v", action, table, recordID, err)
+	}
+}
 
 // tableName returns the SQL table of a resolved model, or "" when it has none
 // or the key looks like an i18n key.

@@ -9,6 +9,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **provenance: procedencia de primera clase** — paquete `provenance` con
+  `Provenance` (`actor_kind` human|agent|system|integration, `actor_id`,
+  `on_behalf_of`, `authorized_by`/`authorized_at`, `via`, `origin`, `ref`,
+  `session_id`, `summary`, modo manual|assisted|automated y `proposed`),
+  transporte por `context.Context` (`WithContext`/`FromContext`/`Ensure`/`DB`),
+  callbacks GORM opt-in (`Register`) que sellan `created_by_id`/`updated_by_id`
+  solo en modelos que ya tienen esas columnas y guardan una fila por registro y
+  cambio en la tabla lateral `metacore_provenance` (bajo savepoint: un fallo no
+  aborta la escritura), `Store` (creación por página, historial por registro) y
+  `Handler` de lectura. `CanonicalEvent.Provenance` y `audit.Entry.Provenance`
+  (columna jsonb omitida cuando es nula). Las corridas de automatizaciones
+  escriben como el agente en nombre del dueño (automated); las propuestas del
+  copiloto aprobadas con `ApplyProposalContext` quedan assisted; las tool calls
+  llevan su referencia. Sin `Register` ni procedencia en el contexto nada
+  cambia.
+
 - **agent: política de ejecución de herramientas en el bucle del orquestador** —
   las llamadas de un mismo turno a herramientas de solo lectura (categorías
   data/knowledge/context o `tools.ParallelSafe`) corren en paralelo
