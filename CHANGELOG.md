@@ -9,6 +9,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **manifest: un host fijado a un commit sin etiqueta cumple los rangos de
+  runtime** — `HostRuntimeVersion` reportaba la pseudoversión de Go
+  (`0.203.2-0.20261016164255-…`), que semver ordena como prerelease y falla
+  todo `>=x`: ninguna instalación con `runtime` pasaba. Ahora se reporta la
+  versión base sobre la que se construyó el commit (`0.203.1`); una
+  pseudoversión sin etiqueta ancestra sigue sin poder demostrarse.
+- **installer: `EnsureSchema` al arrancar** — la columna `last_error` se
+  agregaba con DDL dentro de la primera instalación; en hosts con
+  `PrepareStmt` cada conexión del pool conservaba el plan viejo y toda
+  instalación posterior fallaba con `cached plan must not change result type`
+  hasta reiniciar. `installer.EnsureSchema` (tabla, índice único y columna)
+  corre una vez al arrancar; `host.New` la usa y los hosts que arman su propio
+  `Installer` deben llamarla.
+
 - **agent/claude: no enviar temperature/top_p a Claude 5.x** — langchaingo
   serializa `temperature` siempre (y `top_p` si no es cero) y los modelos Claude
   de generación ≥5 responden 400 (`'temperature' is deprecated`). Nuevo
@@ -18,6 +32,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   JSON. `NewCodeHTTPClient` lo aplica automáticamente.
 
 ### Added
+
+- **host: cableado opcional de tokens de API y gateway de addons** —
+  `AppConfig.EnableAPITokens` (+ `APITokenOptions`) construye `app.APITokens`,
+  crea `metacore_api_tokens` y monta la administración en `/api-tokens` tras
+  el JWT; `AppConfig.APIGateway` (+ `APIGatewayFallback`,
+  `APIGatewayLimiter`) monta el gateway de `runtime/apiroute` en `/gw`,
+  resolviendo el principal por token Bearer. Desactivado por omisión.
+
+- **apitoken: tokens de API con alcances** — paquete nuevo (tabla
+  `metacore_api_tokens`, `Migrate`) con tres tipos: `publishable` (`pk_`,
+  apto para navegador; solo alcances de la lista permitida,
+  `WithPublishableScopes`, por omisión `*:read` y `cart:write`), `secret`
+  (`sk_`) y `platform` (`pt_`, sin organización: un renderer multi-tenant cuya
+  organización resuelve el host por dominio). Formato prefijo + 32 bytes
+  base64url; solo se guarda el SHA-256 (índice único) y un prefijo de 12
+  caracteres para mostrar. `Service`: `Issue` (texto plano una sola vez),
+  `Authenticate` (estado, expiración, `last_used_at` como máximo una vez por
+  minuto), `Rotate` con gracia (dos tokens válidos a la vez), `Revoke`,
+  `List`, `Get`; `Store` con implementaciones GORM y en memoria. Limitador por
+  token (`Limiter`, `MemoryLimiter` de cubeta). Capa Fiber opcional:
+  `NewPrincipalResolver` (Bearer → `apiroute.Principal`, 401/429),
+  `Middleware`/`PrincipalFrom` y `Handler` de administración para staff
+  (listar, emitir, rotar, revocar).
+
+- **runtime/apiroute: rutas de API de addons (`contributions.api`)** — nuevo
+  bloque del manifiesto v3 (`key`, `method` GET|POST|PUT|PATCH|DELETE, `path`
+  con `:param` y `*resto` final, `auth` none|token|customer|staff, `scopes`
+  `area:verbo`, `cache` {`max_age`, `swr`, `private`} solo en GET y
+  `do` `wasm:`/`compiled:`), validado en `manifest/v3` (gramática de ruta
+  exportada como `ParseAPIPath`/`APIPathShape`) y proyectado por `FromV3` a
+  `Manifest.APIRoutes`. El paquete `runtime/apiroute` aporta `Router`
+  (registro atómico por addon con detección de conflictos entre addons,
+  precedencia determinista estático > parámetro > comodín), los sobres
+  `Request`/`Response` (`DecodeResponse`), la interfaz `Dispatcher` para el
+  runtime del host y `Gateway.Handle`: autorización por tipo de principal y
+  alcances, cabeceras en lista blanca (entrada y salida), `Cache-Control`
+  derivado de la política de la ruta (`no-store` por omisión), ETag débil e
+  `If-None-Match` → 304, límite de cuerpo (1 MiB, `WithMaxBodyBytes`),
+  `WithAddonEnabled` y errores tipados mapeados por `ErrorResponse` a
+  `{"error":{"code","message"}}`. La organización es obligatoria: viene de la
+  credencial o, para tokens de plataforma y llamadas anónimas, del dominio
+  (`X-Storefront-Domain` o `Host`) vía la interfaz `DomainResolver` que
+  implementa el host (`WithDomainResolver`; sin resolver → `ErrOrgUnresolved`).
+  Adaptador Fiber opcional (`NewHandler`, `PrincipalResolver`,
+  `WithDomainHeader`). Puramente aditivo.
 
 - **provenance: procedencia de primera clase** — paquete `provenance` con
   `Provenance` (`actor_kind` human|agent|system|integration, `actor_id`,
