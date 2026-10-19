@@ -9,6 +9,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **`money/`: tipo `Money` exacto (solo biblioteca estándar).** Importe en
+  unidades menores `int64` + `Spec` (código, `MinorUnits`, `CashIncrementMinor`,
+  `Scope`) con tabla ISO 4217 (`ISO`), `Decimal` sobre `math/big`
+  (`ParseDecimal` sin exponentes, separadores ni NaN), seis `RoundingMode`
+  (`HalfAwayFromZero` por defecto = `math.Round`), `Parse` (`ErrPrecision`),
+  `ParseRound`, `Add/Sub/Neg/Cmp` (`ErrCurrencyMismatch`, `ErrOverflow` con
+  `math/bits`), `MulDecimal`, `Allocate` por resto mayor (las partes suman el
+  total), `RoundCash`, `Rate` (QUOTE por 1 de BASE) con `Inverse` (escala 12,
+  `HalfEven`) y `Convert`. JSON `{"amount":"1899.00","currency_code":"MXN"}`.
+  Vectores compartidos con `@asteby/metacore-lib` en `money/testdata/golden.json`
+  (fijado por sha256) y pruebas de propiedades y fuzz.
 - **manifest v3: `contributions.guides[]` (ayuda in-app por rol).** Guías cortas
   y tours guiados declarables por addon o preset: `key`, `title`, `roles[]`,
   `permission`, `trigger` (`manual` | `first_visit`), `route` (obligatoria con
