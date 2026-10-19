@@ -190,6 +190,7 @@ Un addon proveedor implementa las capacidades que le apliquen y declara cada una
 | status | `commerce.payments.status` | sí | — | La misma salida que `confirm`. Es la fuente de verdad. |
 | cancel | `commerce.payments.cancel` | sí | sí | Responde `cancelled`, `cancelling` o `not_cancellable`. Siempre se re-lee el estado después. |
 | refund | `commerce.payments.refund` | sí | sí | Añade `seller` y `refund_application_fee`; la salida, `provider_ref` y `provider_status`. |
+| estado de reembolso | `commerce.payments.refund.status` | sí | — | Nuevo (K2). Lee un reembolso por su `refund_id` (GET, solo lectura); la salida es la de `refund`. Es la única re-consulta de un reembolso que el proveedor ya numeró. |
 | confirm (webhook) | `commerce.payments.confirm` | sí | — | Verifica la firma y la ventana de repetición, y re-lee el pago. Nunca confía en el monto ni en el estado del cuerpo. |
 | capabilities | `commerce.payments.capabilities` | sí | — | |
 | conciliación | `commerce.payments.reconcile` | sí | — | Lista paginada (`from`, `to`, `cursor`) de salidas de `status`. |
@@ -283,7 +284,7 @@ Reglas del cobro, en orden:
 
 1. **El total sale del documento guardado**, nunca del cliente. `CheckLinesTotal(total, líneas…)` exige que el total sea la suma de las líneas guardadas (7leguas orden 71621).
 2. `CheckTenders(declarado, tenders…)`: los tenders suman **exactamente** lo declarado y ninguno es cero o negativo. Una fila con importe sin método se rechaza (7leguas 649f6197f).
-3. `Settle(Collection{currency, total, already_paid, non_cash, cash, cash_tolerance})`. La parte no efectivo nunca excede lo debido (`ErrExceedsTotal`: una tarjeta cobrada de más jamás se devuelve en efectivo). Solo el efectivo da cambio, y el cambio nunca excede el efectivo entregado. Un faltante del efectivo ≤ tolerancia se absorbe como `rounding` (el reciclador no da monedas menores a la mínima: 7leguas a8f3e6df6); la tarjeta nunca redondea. Montos negativos son `ErrNegativeAmount` y todo monto se cuantiza a la moneda (`ErrNotQuantized`). La **tolerancia es un ajuste de la organización** (hoy `cash_rounding_tolerance_cents` del POS, $0.50 por omisión) dentro de un tope del kernel: `MaxCashTolerance` = una unidad de la moneda menos su unidad mínima (0.99 MXN, 0.999 KWD, 0 JPY). `CheckCashTolerance` valida el ajuste al guardarlo y `Settle` rechaza uno fuera de rango (`ErrInvalidTolerance`): una configuración mala no perdona deudas. Además del tope absoluto hay uno relativo: el redondeo no puede pasar de `MaxRoundingShare` (10 %) de lo que el efectivo debía cubrir, así que 0.01 en efectivo no salda un adeudo de 0.50. Un faltante mayor deja `Remaining`, y el canal decide si el documento admite pago parcial (apartados).
+3. `Settle(Collection{currency, total, already_paid, non_cash, cash, cash_tolerance})`. La parte no efectivo nunca excede lo debido (`ErrExceedsTotal`: una tarjeta cobrada de más jamás se devuelve en efectivo). Solo el efectivo da cambio, y el cambio nunca excede el efectivo entregado. Un faltante del efectivo ≤ tolerancia se absorbe como `rounding` (el reciclador no da monedas menores a la mínima: 7leguas a8f3e6df6); la tarjeta nunca redondea. Montos negativos son `ErrNegativeAmount` y todo monto se cuantiza a la moneda (`ErrNotQuantized`). La **tolerancia es un ajuste de la organización** (hoy `cash_rounding_tolerance_cents` del POS, $0.50 por omisión) dentro de un tope del kernel: `MaxCashTolerance` = una unidad de la moneda menos su unidad mínima (0.99 MXN, 0.999 KWD, 0 JPY). `CheckCashTolerance` valida el ajuste al guardarlo y `Settle` rechaza uno fuera de rango (`ErrInvalidTolerance`): una configuración mala no perdona deudas. Además del tope absoluto hay uno relativo: el redondeo no puede pasar de la constante `MaxRoundingPercent` (10 %) de lo que el efectivo debía cubrir, así que 0.01 en efectivo no salda un adeudo de 0.50. Un faltante mayor deja `Remaining`, y el canal decide si el documento admite pago parcial (apartados).
 4. El cobro y el estado del documento se escriben **en una sola transacción**, bajo el hold.
 
 **Reglas por método que se portan con prueba (3.4, 3.5):**
@@ -379,3 +380,71 @@ Retrocompatibilidad durante la migración: un proveedor sin migrar sigue funcion
 - ❓ Marketplace v2 (cobro centralizado y liquidación).
 - Contrato fiscal de nota de crédito (Fase 4), que necesita 3.7.
 - Disputas y contracargos: hoy `kind: dispute` llega en el evento, pero el ciclo de vida de la disputa (evidencia, plazos) no tiene contrato.
+
+## 16. Implementación de K2 (ledger) y K3 (conciliación)
+
+Paquete `payments/ledger`. El host lo construye con `ledger.New(ctx, db, Config{...})`:
+
+| Campo de `Config` | Qué conecta el host |
+|---|---|
+| `Providers` | El querier de capacidades de proveedores (el de ops, **no** el `HostQuerier`: así no hay recursión). |
+| `Publish` | El bus de eventos. Publica `commerce.payments.confirmed` con el proveedor como emisor y `kernel.payments.anomaly` como `kernel`. |
+| `Anomalies` | La cola de revisión y las notificaciones (en ops: `rule_flags` de B8 y el aviso por rol). |
+| `IsPaymentsProvider` | Dice si un addon provee alguna capacidad `commerce.payments.*` en la org. |
+
+**Escritor único.** Ningún addon escribe en las tablas `commerce_*`:
+
+- Los **canales** cobran, consultan, cancelan y reembolsan con `payments.*`. El ledger llama al proveedor y registra su respuesta.
+- Los **proveedores** solo reportan con `payments.observe` lo que su webhook re-leyó, y solo sobre sus propios pagos: el host fuerza `provider = caller`.
+
+**API para addons.** Son contratos implementados por el host. Se llaman con el import `capability_query` de siempre y se autorizan con la concesión `capability:query` del manifest. No hay import nuevo ni cambio de esquema.
+
+| Llave | Quién la usa | Qué hace |
+|---|---|---|
+| `payments.hold.acquire` / `payments.hold.release` | POS, caja, kiosko, tienda | Toma o renueva el hold de un documento (409 `in_payment` si es ajeno). El token se devuelve una sola vez y se guarda como hash. Un guest no puede forzar la liberación. |
+| `payments.charge.start` | Canales | Bajo el bloqueo del documento: `CheckCharge` del hold, `CheckReplay`, y un monto ≤ lo que falta. Luego `terminal.create` o `session` fijados al proveedor, o efectivo de cajón (`paid` en el acto). Un timeout queda `pending` con `indeterminate: true`. |
+| `payments.charge.refresh` | Canales (sondeo de la UI) | Re-lee con `commerce.payments.status` y registra. |
+| `payments.charge.cancel` | Canales | `commerce.payments.cancel`; si responde `cancelling` lo registra, y **siempre** re-lee (la carrera con el comprador puede terminar en `paid`). |
+| `payments.document.get` | Canales, `returns` | Pagos, reembolsos, `net_paid`, `open` y el hold vivo (sin token). |
+| `payments.refund.create` / `payments.refund.settle` | `returns`, POS, caja | `CheckRefund` bajo bloqueo del pago. Al método original se llama `commerce.payments.refund`; monedero y efectivo quedan `pending` hasta que el canal los liquida. `credit_note_id` cierra la NC. |
+| `payments.observe` | Solo proveedores | Registra un estado re-leído por el webhook del proveedor. |
+
+**Reglas que aplica `Observe`:**
+
+- Dedupe por `(org, provider, event_id)`, con el id del proveedor o uno derivado.
+- `payments.Observe` decide entre aplicar, ignorar o marcar anomalía.
+- Una captura con **otro monto o moneda** es la anomalía `amount_mismatch` y nunca se aplica.
+- Una anomalía confirmada por una segunda lectura de conciliación con el mismo estado se aplica como corrección auditada (evento `corrected`), salvo `amount_mismatch`.
+- Un pago desconocido es `orphan`.
+- Un webhook que sube `amount_refunded` **no** marca `succeeded` los reembolsos pendientes por cobertura: el total no dice cuál reembolso fue, y uno hecho en el panel del proveedor no puede saldar uno de OPS que el proveedor no ha ejecutado. En su lugar, el webhook **encola** la re-consulta de los reembolsos pendientes de ese pago (`next_recheck_at = ahora`) y el `Reconciler` la corre con las reglas de abajo; el webhook nunca llama al proveedor. Solo se consultan los que ya no están en vuelo (con `provider_refund_id`, o creados hace más de un minuto). Mientras tanto, lo reservado es `max(amount_refunded, Σ succeeded) + Σ pending`.
+- El estado de un reembolso es monótono (`CanTransitionRefund`, bajo bloqueo de la fila): una respuesta síncrona `pending` que llega después del webhook no regresa un `succeeded`. Un reintento de `payments.refund.create` con la misma llave sobre un reembolso `pending` vuelve a consultar al proveedor; un error en esa re-consulta nunca lo marca `failed`.
+- El dedupe usa `INSERT … ON CONFLICT DO NOTHING`: dos entregas concurrentes del mismo evento (también huérfano, sin fila de pago que bloquear) dan una inserción y un `duplicate`, nunca un 500. Un id derivado que se repite en un movimiento válido a otro estado (`authorized → cancelling → authorized`, cancelación rechazada) se registra con su propio id (`…|after|<estado guardado>`).
+- Al pasar a `cancelling` se guarda `cancelled_from`; una re-lectura de un estado abierto anterior a ese es `stale`.
+- Cuando el documento queda pagado completo (contra el `document_total` que se guardó al cobrar), el hold vivo pasa a `consumed`.
+
+**Concurrencia:** hay un `pg_advisory_xact_lock` por documento para holds y cobros, `SELECT … FOR UPDATE` sobre el pago en `Observe` y en los reembolsos, y los índices únicos de §2.4. Hay pruebas en Postgres con `-race` (corren con `TEST_POSTGRES_DSN`): 8 cobros simultáneos del mismo documento dejan **un** pago, 8 holds simultáneos dejan uno y 8 entregas simultáneas del mismo huérfano dan un registro y 7 duplicados.
+
+**K3, `Reconciler`.** `Run(ctx, every)` hace lo siguiente en cada vuelta y por organización:
+
+- Toma un lease en `commerce_payment_reconcile_leases`, para que nunca haya dos réplicas sobre la misma org.
+- Re-lee los pagos abiertos que no se han revisado en `MinAge` (30 s).
+- Si un pago venció (`expires_at`, o más de `StuckAfter` = 30 min sin expiración), pide cancelarlo, lo re-lee y lo marca `stuck` si el proveedor lo mantiene abierto.
+- Re-lee los pagos con anomalía (la segunda lectura corrige).
+- Lista `commerce.payments.reconcile` por proveedor en una ventana de 2 h. Las ventanas se traslapan a propósito y el dedupe vuelve idempotente el proceso; lo desconocido es huérfano.
+- Re-consulta al proveedor los reembolsos al método original que siguen `pending` (timeout, webhook perdido), para que ninguno quede reservado para siempre ni bloquee la nota de crédito. Las llaves de idempotencia caducan (24 h en Stripe), así que un re-POST tardío podría reembolsar dos veces. Por eso:
+  - Si el proveedor ya numeró el reembolso (`provider_refund_id`), solo se **lee** con `commerce.payments.refund.status` (GET). Nunca se vuelve a mandar `commerce.payments.refund`. No tiene límite de edad: un reembolso numerado se sigue leyendo con backoff aunque tarde días (SPEI, MP) y nunca pasa solo a `needs_review`. Un proveedor sin `refund.status` lo deja `pending` hasta su webhook.
+  - Si no lo numeró, se re-manda el mismo `commerce.payments.refund` con la misma llave solo dentro de una ventana por proveedor (`Config.RefundRepostWindow`; por omisión `DefaultRefundRepostWindow` = 12 h), contada desde la primera solicitud.
+  - Pasada la ventana, el reembolso **sin numerar** que sigue `pending` queda con `needs_review` (lo reservado se mantiene), se levanta la anomalía `refund_needs_review` (evento `kernel.payments.anomaly`) y no se le vuelve a preguntar solo. `payments.refund.settle` lo resuelve a mano y limpia la marca.
+  - Entre intentos hay backoff exponencial (1, 2, 4 … min, tope 1 h; `recheck_attempts`, `next_recheck_at`). Un reintento de `payments.refund.create` con la misma llave sigue las mismas reglas sin esperar el backoff.
+- Renueva el lease cuando pasa la mitad de su duración; si otra réplica lo tomó, la corrida se detiene y lo anota en el `Report`.
+
+Al final guarda el `Report` en el lease (`last_report`).
+
+**Cadena de versiones:**
+
+1. El kernel #507 (K1) entra primero.
+2. Después este PR (K2/K3), apilado sobre #507.
+3. Luego el tag minor del kernel.
+4. Al final, ops quita el `replace` o pseudo-versión temporal y fija el tag.
+
+El hub y manifestcheck no necesitan nada: las llaves `payments.*` son datos.
