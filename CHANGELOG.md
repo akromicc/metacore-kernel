@@ -9,6 +9,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Estándar de pagos de la plataforma, fase K1: contrato** ([RFC](docs/RFC-PAYMENTS-STANDARD.md)).
+  Paquete nuevo `payments` (Go puro, sin base de datos): los registros canónicos
+  `Payment`, `Refund` y `PaymentEvent`, el ciclo de vida normalizado con la
+  tabla de transiciones válidas (`Transition` para comandos locales,
+  `Observe` para estados re-leídos del proveedor: aplicar, ignorar un
+  duplicado o una lectura fuera de orden, o anomalía como `late_capture`), el
+  hold de cobro por documento con TTL y token (`Acquire`, `CheckCharge`,
+  `Release`, `Consume`), el replay idempotente (`CheckReplay`), las reglas del
+  cobro (`CheckTenders`, `CheckLinesTotal`, `Settle` con tolerancia de
+  redondeo de efectivo por organización), lo reembolsable (`Refundable`,
+  `CheckRefund`, `ApplySucceededRefunds`, nota de crédito obligatoria en
+  `Refund.Complete`) y `DecodeConfirmed`, que exige `emitter == provider` en
+  `commerce.payments.confirmed`. El dinero se opera con `math/big`, nunca con
+  `float64`.
+  `capability`: los estados `at_device` y `cancelling` (al final del enum), los
+  vocabularios `PaymentChannels` (`terminal|online|qr|link|cash`), `CardTypes`,
+  `RefundStatuses`, `CancelOutcomes` y `PaymentEventSources`, las formas
+  `Card`, `Seller` (marketplace) y `CashTender`, y los contratos
+  `commerce.payments.cancel`, `.capabilities`, `.reconcile`,
+  `.terminal.create` y `.terminal.devices` (todos fijados al proveedor;
+  `cancel` y `terminal.create` mutantes). Campos opcionales nuevos en
+  `session`, `confirm`/`status`, `refund` y en el payload del evento neutral
+  (`organization_id`, `occurred_at`, `source`, `payment_id`, documento).
+  `ValidCurrency`. Retrocompatible: los 4 contratos de pago conservan sus
+  requeridos de entrada y salida (prueba incluida).
+  Reglas de dinero endurecidas en la revisión: `Settle(Collection)` separa
+  la parte no efectivo (nunca excede lo debido) del efectivo (el único que da
+  cambio, nunca mayor que lo entregado) y acota la tolerancia de redondeo a
+  `MaxCashTolerance` (menos de una unidad de la moneda); `Refundable` respeta
+  el `amount_refunded` del proveedor; `CheckRefund` da
+  `ErrIdempotencyConflict` si la llave se reusa con otros datos;
+  `ObserveOutcome` compara monto, moneda, `provider_ref` y total reembolsado;
+  la máquina de estados es monótona (`authorized → at_device` es `stale`) y
+  `Command` limita los comandos locales por canal; montos cuantizados por
+  moneda (`ParseMoney`) con escala máxima `MaxScale`; `NewHoldToken` y
+  `Consume` solo sobre un hold vigente; `DecodeConfirmed` exige `isProvider` y
+  `ConfirmedFor`; `EmitPolicy` aplica `commerce.payments` como enforce aun en
+  modo warn; el manifest rechaza `seller`/`refund_application_fee` desde
+  `payload.*`; `cash.rounding` en el contrato. `DerivedEventID` incluye moneda
+  y monto (dos reembolsos parciales sin `event_id` no colisionan);
+  `Payment.CancelledFrom` evita que una cancelación rechazada pierda el
+  `authorized`; `ObserveOutcome` no aplica una captura sin monto; el redondeo
+  de efectivo tiene además un tope relativo (`MaxRoundingShare`).
+
 - **manifest v3: `contributions.guides[]` (ayuda in-app por rol).** Guías cortas
   y tours guiados declarables por addon o preset: `key`, `title`, `roles[]`,
   `permission`, `trigger` (`manual` | `first_visit`), `route` (obligatoria con
