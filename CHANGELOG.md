@@ -93,6 +93,90 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `permission`, `trigger` (`manual` | `first_visit`), `route` (obligatoria con
   `first_visit`), `order` y `steps[]` (reusa `AgentGuideStep`: `target` de UI o
   paso `concept`). Validación de claves y pasos únicos en `v3.Validate`.
+- **preset: presets que extienden a otro (`preset.extends`) y visibilidad
+  privada.** Base del RFC `docs/rfcs/RFC-PRESETS-DE-EMPRESA-Y-DISTRIBUCION.md`.
+  - Manifest v3: `metadata.visibility` (`public|private`), `metadata.owner`,
+    `preset.extends {key, version}` y `preset.remove_addons`. `preset.addons`
+    puede ir vacío cuando hay `extends`. El schema embebido lo acepta, así que
+    hub y manifestcheck deben subir a esta versión antes de publicar un preset
+    que lo use.
+  - `preset.Flatten(base, overlay)` une un preset con su base. Los addons se
+    unen por clave, con rangos combinados (deben cumplirse los dos), `optional`
+    del overlay y `requires` unidos; `remove_addons` se aplica al final. Los
+    `defaults` se unen con la tabla `preset.MergeStrategies` (merge-patch,
+    reemplazo, listas por identidad con `_remove` y unión de `permissions`, y
+    `records` por modelo).
+  - `Resolved.Lineage` registra la cadena (base primero). `ResolveFromManifest`
+    devuelve `ErrNeedsBase` para un overlay, así un host viejo falla en vez de
+    instalar solo las diferencias.
+  - `preset.InlineFiles` resuelve las claves `*_file` de `preset.defaults`
+    desde el bundle. Hoy nadie las lee, por eso los roles, categorías, branding
+    y dashboards de los presets por archivo no se aplican en SaaS.
+- **preset: brand kit tipado y archivos del bundle de un preset.**
+  - `bundle.Bundle.PresetFiles` conserva todo `defaults/**` y `assets/**` (antes
+    `Read` los descartaba) y `Write` los emite. `(*Bundle).ReadPresetFile` lee
+    uno por ruta (acepta `./`).
+  - `v3.Branding` tipa `preset.defaults.branding` con los campos de hoy
+    (`platform_name`, `logo_url`, `favicon_url`, `primary_color`,
+    `accent_color`, `support_email`, `support_url`, `mascot_name`,
+    `mascot_skin`) más `logo_dark_url`, `logo_mark_url`, `login_background_url`,
+    `theme_key`, `font`, `density`, `pwa_name`, `pwa_short_name` y
+    `email_from_name`. Todos son opcionales. Los colores deben ser hex y los
+    assets una URL http(s) o una ruta `./assets/...`. Las claves desconocidas
+    son error. Los helpers son `ParseBranding`, `Validate`, `AssetPaths`,
+    `WithAssetURLs` y `ToMap`.
+  - Validación: el branding inline se valida en `v3.Validate` (y en el schema).
+    `bundle.Read` estricto además resuelve los `*_file`, valida el branding que
+    viene de `branding_file` y exige que cada `./assets/...` exista en el bundle.
+    En modo no estricto, esto queda como `ValidationWarnings`.
+  - `preset.ResolveWithFiles` y `preset.FlattenWithFiles` hacen inline de los
+    `*_file` desde los archivos del bundle y llenan `Resolved.Files`. El
+    branding del overlay se une por merge-patch y sus assets ganan en la misma
+    ruta. `Resolved.Branding()` devuelve el kit efectivo (con `theme_key`,
+    `font` y `density` de `ui_theme` como respaldo) y reporta los assets que
+    faltan.
+  - `InlineFiles` desenvuelve un archivo cuyo único campo es su propio nombre
+    (`{"roles": [...]}` en `roles.json`, la forma del appliance), y los `roles`
+    se unen por `name`, la identidad que usa ops.
+  - `v3.Branding.Fonts`: familias de fuente adicionales (nombres de Google
+    Fonts, por ejemplo `Barlow`) que el host carga para las superficies propias
+    de la org (kiosko, pantalla de cliente, documentos), aparte del token `font`
+    de la UI.
+  - `preset.AssetRefs(defaults)` y `preset.RewriteAssetRefs(defaults, urls)`:
+    las referencias `./assets/...` de cualquier default (por ejemplo los assets
+    del tema de un `kiosk_profile`) se materializan y se reescriben igual que
+    las de branding. `bundle.Read` estricto exige que todas existan.
+- **preset: endurecimiento del overlay (revisión r1 de #508).**
+  - **Escalada por overlay:** `Flatten` rechaza (`ErrRoleEscalation`) los roles
+    del overlay con comodines, con campos fuera del contrato del rol (flags de
+    sistema o admin) o que tocan roles de sistema: quitarlos con `_remove`,
+    cambiar sus permisos o crear uno con nombre reservado
+    (`SystemRoleNames`, comodín o flag `system`/`is_system`/`admin`).
+    `FlattenWithOptions(..., FlattenOptions{KnownPermission})` exige además que
+    cada permiso agregado lo declare el set resuelto
+    (`preset.DeclaredPermissions(addons...)`).
+  - `preset.ResolveChain(top, files, fetch, opts)` resuelve la cadena
+    `extends` de arriba abajo, acotada por `MaxLineage`, con detección de
+    visitados (A→B→A da `ErrCyclicExtends`) y verificación de clave y rango de
+    cada base.
+  - **SVG:** `preset.ValidateSVG` (allowlist portada de ops#1977) y
+    `bundle.Read` valida cada `assets/**.svg`. El host además debe servir los
+    assets con `Content-Security-Policy: sandbox` y
+    `X-Content-Type-Options: nosniff`.
+  - **Cadena de versiones:** `manifest.APIVersion` pasa a `3.1.0`. Un manifest
+    con `metadata.visibility` o `preset.extends` debe requerir
+    `kernel >=3.1.0` (`v3.OverlayMinKernel`), así un host 3.0.x lo rechaza en
+    la compatibilidad. `docs/spec/v3/manifest-v3.schema.json` vuelve a ser
+    idéntico al embebido.
+  - **Menores:** `combineRanges` rechaza rangos sin versión en común;
+    `DefaultsWarnings` avisa de un `extends` sin tope y de una clave inline
+    que tapa su `*_file` (van a `ValidationWarnings`); `Write`,
+    `FlattenWithOptions` y `Read` rechazan rutas de preset sucias, con `\` o
+    con `%`, y `Read` rechaza `\` en cualquier entrada; las refs
+    `./assets/...` sucias se reportan; `mergeKeyed` usa identidad estable
+    (campo + JSON), identidad alternativa para roles (`key`, `name`, `slug`),
+    no copia `-perm` a un ítem nuevo y un `_remove` seguido de la misma
+    identidad crea un ítem nuevo en vez de revivir el de la base.
 - **Columnas snapshot y autorizaciones declarativas (`models[].snapshots`,
   `columns[].grant`; docs/snapshots.md).** Al crear, el servidor copia columnas
   desde una fila relacionada (costo y piso del producto al vender, sucursal y
