@@ -105,6 +105,8 @@ type Host struct {
 	approvalConsumer func(ctx context.Context, in dynamic.ConsumeInput) error
 	connectors        *connectors.Resolver
 	capQuerier        capability.Querier
+	edgeCommander     EdgeCommander
+	edgeLimits        *edgeLimiter
 	emitPolicy        EmitPolicyFunc
 	logger            *log.Logger
 	compiled          sync.Map // addonKey -> *compiledEntry
@@ -796,6 +798,8 @@ func (h *Host) invokeOnce(ctx context.Context, tx *gorm.DB, orgID uuid.UUID, ins
 		approvalConsumer:  h.approvalConsumer,
 		connectors:        h.connectors,
 		capQuerier:        h.capQuerier,
+		edgeCommander:     h.edgeCommander,
+		edgeLimits:        h.edgeLimits,
 		emitPolicy:        h.emitPolicy,
 		metrics:           h.metrics,
 		logger:            h.logger,

@@ -131,6 +131,13 @@ type invocation struct {
 	// capQuerier resolves and runs capability queries for the
 	// capability_query import (Host.WithCapabilityQuerier). nil = unavailable.
 	capQuerier capability.Querier
+	// edgeCommander delivers edge_command to a device's agent
+	// (Host.WithEdgeCommander). nil = unavailable.
+	edgeCommander EdgeCommander
+	// edgeLimits / edgeSent: edge_command rate limits (host-wide windows)
+	// and this invocation's count.
+	edgeLimits *edgeLimiter
+	edgeSent   int
 	// emitPolicy gates event_emit by event name (Host.WithEmitPolicy). nil =
 	// no policy (pre-policy behaviour).
 	emitPolicy EmitPolicyFunc
@@ -538,7 +545,7 @@ func registerHostModule(ctx context.Context, h *Host, rt wazero.Runtime) error {
 	// user come from the invocation context, never from the guest. No
 	// capability gate: the grant itself is the authorization, and the host
 	// refuses anything that is not the caller's own, fresh, unused grant.
-	// See docs/wasm-abi.md § 23.
+	// See docs/wasm-abi.md § 25.
 	b.NewFunctionBuilder().
 		WithFunc(func(ctx context.Context, mod api.Module,
 			reqPtr, reqLen uint32) uint64 {
@@ -621,6 +628,24 @@ func registerHostModule(ctx context.Context, h *Host, rt wazero.Runtime) error {
 			return writeToGuest(ctx, mod, env)
 		}).
 		Export("routing_resolve")
+
+	// edge_command(reqPtr, reqLen) -> i64 (ptr|len envelope)
+	// Sends a command to a physical device of the org (a CashDro, a
+	// printer…) through its agent connection and returns the answer the host
+	// transported. Gated by `edge:command <device_key>.<kind>` and by the
+	// device class belonging to the caller. See docs/wasm-abi.md § 25.
+	b.NewFunctionBuilder().
+		WithFunc(func(ctx context.Context, mod api.Module,
+			reqPtr, reqLen uint32) uint64 {
+			inv := invocationFrom(ctx)
+			if inv == nil {
+				return 0
+			}
+			req := readBytes(mod, reqPtr, reqLen)
+			env := executeEdgeCommand(ctx, inv, req)
+			return writeToGuest(ctx, mod, env)
+		}).
+		Export("edge_command")
 
 	if _, err := b.Instantiate(ctx); err != nil {
 		return fmt.Errorf("instantiate metacore_host: %w", err)
