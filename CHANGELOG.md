@@ -7,6 +7,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **legacybridge: motor genérico de coexistencia con un sistema legado.**
+  Paquete nuevo (`bridge/` ya es la costura host-kernel). Sirve para operar el
+  host y el ERP anterior a la vez durante una migración por fases, sin nada de
+  un legado concreto:
+  - `Envelope` (agregado completo: raíz, hijos, facetas y dependencias),
+    `Batch` y `ParseNDJSON`; `SourceVersion` monótona por fila
+    (`CompareVersions`) y huella de contenido (`Hash`).
+  - `Applier.Ingest`/`Apply`: idempotencia por versión y huella, orden por fila
+    (lo viejo se descarta), espera de dependencias con backoff y revisión tras
+    `MaxWait` (nunca filas fantasma), propiedad por (entidad, sucursal, fase) con
+    conflictos a `dataload.ReviewStore`, supresión del eco de los comandos
+    propios y cursor guardado en el host.
+  - `bridge_refs` (mapa de ids por sistema, únicos por external_id y por
+    local_id), `bridge_cursors`, `bridge_ownership` (+ bitácora y fase activa),
+    `bridge_pending` y `bridge_commands`: `GormStore` (Postgres/SQLite, `Migrate`)
+    y `MemoryStore`.
+  - `Outbound`: comandos con clave de idempotencia, entregados por el outbox del
+    kernel en orden por agregado, con backoff propio y cola de muertos que
+    bloquea su agregado hasta `RetryDead`/`Discard`; `Run` barre los agregados
+    vencidos.
+  - `Router`: `CanonicalEvent` → comandos según el mapa de propiedad (hacia el
+    dueño legado, o réplica cuando el dueño es el host); ignora las escrituras
+    del propio puente (`CorrelationPrefix`).
+  - `HTTPConnector` (Bearer, `X-Idempotency-Key`, firma HMAC-SHA256
+    `Sign`/`Verify`; 4xx de validación = permanente, 5xx/429 = reintento).
+  - Concurrencia: cada envelope se aplica con su fila tomada (candado de
+    proceso + `Locker`, que en Postgres es `pg_advisory_xact_lock`) y el cursor
+    se avanza bajo candado con `CompareCursors` (orden total; nunca retrocede).
+    Probado con dos aplicadores a la vez sobre Postgres.
+  - Límites: `MaxBatchEnvelopes`, `MaxFacets`, `MaxRequires` y largo de ids,
+    versión, stream y cursor.
+  - `RefStore.ListRefs` (paginado por external_id, para la reconciliación).
+  - `Invalid(err)`: el Sink marca un error del dato (no de infraestructura); el
+    envelope va a revisión y el cursor sigue, sin quedar atorado en una fila
+    envenenada.
+  - `Outbound.RetryDead`/`Discard` reciben la organización: un comando de otra
+    org responde `ErrCommandNotFound`.
+
 ### Fixed
 
 - **Un grant gastado se limpia con `NULL`, no con `""`, en el update (`StampUpdate` / `UpdateStamper` / `Host.WithUpdateStamp`).** Al re-estampar un update, la columna `columns[].grant` cuyo id ya se gastó recibía una cadena vacía: en una columna `uuid` fallaba (`invalid UUID length: 0` en `mapToStruct`; en Postgres el UPDATE del camino wasm lo rechazaba con `invalid input syntax for type uuid`). Ahora el patch lleva `nil`, y `dynamic.Service.Update` también pone en cero el campo del modelo (un `null` JSON no toca un campo no puntero). El create no estaba afectado. Cubierto con pruebas unitarias y una con columna `uuid` real en Postgres.
