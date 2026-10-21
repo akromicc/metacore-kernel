@@ -34,6 +34,11 @@ type Record struct {
 	ValidatedAt *time.Time `json:"validated_at,omitempty"`
 	// Source records where the token came from: "env", "file", "admin", "renew".
 	Source string `json:"source,omitempty"`
+	// RevokedAt is when the hub FIRST answered a renew with "license revoked".
+	// It anchors the revoke grace window and survives restarts so a reboot
+	// cannot reset the clock. A successful renew or a newly activated token
+	// persists a fresh Record without it, which clears the revocation.
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 }
 
 // Wildcard reports whether the persisted entitlement set grants "*".
@@ -55,6 +60,17 @@ type LicenseStore interface {
 	Load(ctx context.Context) (*Record, error)
 	// Save upserts the singleton Record.
 	Save(ctx context.Context, rec *Record) error
+}
+
+// RevokeAnchorStore is an OPTIONAL side channel for stores whose persisted row
+// cannot carry Record.RevokedAt (a GORM table that has not added the column to
+// its Record mapping). When the LicenseStore also implements it, the service
+// persists the first-observed revocation instant through it, so the revoke
+// grace survives restarts and cannot be reset. Save/Load of the Record itself
+// need not touch the anchor. SaveRevokeAnchor(nil) clears it.
+type RevokeAnchorStore interface {
+	LoadRevokeAnchor(ctx context.Context) (*time.Time, error)
+	SaveRevokeAnchor(ctx context.Context, at *time.Time) error
 }
 
 // MemoryStore is an in-memory LicenseStore for tests and ephemeral embedders.
