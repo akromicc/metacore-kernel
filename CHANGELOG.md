@@ -108,6 +108,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     (`wasm_export_drift_total`, `Installer.StrictBackendExports`).
   - `bridge.WireCacheEpochBroadcast`: mensaje WS `CACHE_EPOCH_CHANGED`.
 
+- **licensing: base de firma v2 (sobre `asteby1.`, key set, lista de estado, contador de lease).**
+  Todo aditivo y apagado por defecto: un token actual sigue verificando igual.
+  - Paquete nuevo `licensing/sigv2`: sobre `asteby1.<header>.<payload>.<sig>` con
+    `kid` y separación de dominio por tipo de mensaje (grant, lease, release,
+    revocaciones, estado); `Open` acepta AMBOS formatos (el actual sin `kid` se
+    trata como `kid` legado) y `Policy.RequireV2` rechaza el formato viejo
+    (anti-downgrade). Key set estilo TUF (`root.json`: claves por rol, umbral,
+    caducidad, versión monótona, rotación encadenada) con `Bootstrap`/`Update`
+    y SIN ceremonia ni claves reales. Lista de revocaciones firmada con `seq` y
+    `valid_until` más `Tracker` que rechaza listas viejas o caducadas y aplica
+    una política configurable sin lista fresca (`warn` por defecto, `readonly`,
+    `block`, `ignore`) con margen offline configurable.
+  - `licensing`: `VerifyWith` y `Config.Keys`/`RequireV2`/`LeaseCounter`
+    (`LICENSING_REQUIRE_V2`, `LICENSING_LEASE_COUNTER`); claim opcional `ctr`
+    (contador de lease) que el renew devuelve como `lease_ctr` solo con el flag
+    encendido, para que el hub detecte clonado en modo solo alerta.
+    `StatusTrackerConfigFromEnv` lee `LICENSING_STATUS_STALE_POLICY` y
+    `LICENSING_STATUS_MARGIN_HOURS`.
+  - El renew ANUNCIA `token_formats: ["asteby1"]` (aditivo): el hub solo emite
+    el sobre v2 a quien lo anuncia; un kernel sin este campo sigue recibiendo el
+    token de dos partes. `Config.RetireLegacyKey` / `LICENSING_RETIRE_LEGACY_KEY`
+    (con `Keys`) deja de confiar en la clave legada del hub para que una
+    rotación por key set pueda retirarla. `Tracker.Restore` ya no baja el piso
+    anti-rollback y `IsRevoked` acepta ids publicados como `sigv2.HashedID`.
+  - Bajar de versión el kernel tras recibir un token `asteby1.` lo deja en
+    `invalid` (no lo lee ni renueva solo). Recuperación: reactivar con la `lic_`
+    desde el kernel anterior (la activación sin `token_formats` devuelve el token
+    legado). Documentado en el paquete `licensing`; el kernel no guarda una copia
+    legada para no imponer una columna nueva a cada `LicenseStore`.
+
 - **legacybridge: motor genérico de coexistencia con un sistema legado.**
   Paquete nuevo (`bridge/` ya es la costura host-kernel). Sirve para operar el
   host y el ERP anterior a la vez durante una migración por fases, sin nada de
